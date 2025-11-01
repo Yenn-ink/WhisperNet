@@ -1,32 +1,26 @@
-/* ================================================
- * WHISPERNET BACKEND (TextBee Edition)
- * ================================================*/
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const axios = require('axios'); // <-- We use axios to make API requests
-require('dotenv').config(); // <-- To read our .env file
+const axios = require('axios'); 
+require('dotenv').config(); 
 
 const app = express();
 const PORT = 3001;
 
-// 1. Get TextBee credentials from .env file
+// creds from .env file
 const TEXTBEE_API_KEY = process.env.TEXTBEE_API_KEY;
 const TEXTBEE_DEVICE_ID = process.env.TEXTBEE_DEVICE_ID;
 
-// 2. Middleware
-app.use(cors()); // Allow cross-origin requests
-app.use(bodyParser.json()); // To parse JSON bodies
-app.use(express.static(__dirname)); // Serves your index.html file
+// checks
+app.use(cors()); 
+app.use(bodyParser.json()); 
+app.use(express.static(__dirname)); 
 
-// 3. The API Endpoint (Modified for TextBee)
-// This is the function called by your index.html
+// The API Endpoint
 app.post('/send-sms', async (req, res) => {
-    // Get the phone number and message from the front-end
+    // phone number and message from the front-end
     const { to, message } = req.body;
 
-    // This is the URL provided by TextBee's documentation
     const TEXTBEE_URL = `https://api.textbee.dev/api/v1/gateway/devices/${TEXTBEE_DEVICE_ID}/send-sms`;
 
     // Check if keys are loaded
@@ -47,18 +41,16 @@ app.post('/send-sms', async (req, res) => {
             },
             {
                 headers: {
-                    'x-api-key': TEXTBEE_API_KEY, // The API key
+                    'x-api-key': TEXTBEE_API_KEY, 
                     'Content-Type': 'application/json'
                 }
             }
         );
-
-        // If successful, log it and tell the front-end
+        
         console.log('[Gateway] Success:', response.data);
         res.json({ success: true, sid: response.data.message_id || 'textbee-sent' });
 
     } catch (error) {
-        // If it fails, log the error and tell the front-end
         console.error('[Gateway] Error:', error.response ? error.response.data : error.message);
         res.status(500).json({ 
             success: false, 
@@ -67,8 +59,8 @@ app.post('/send-sms', async (req, res) => {
     }
 });
 
-// 4. Start the Server
+//Server Start 
 app.listen(PORT, () => {
-    console.log(`🚀 WhisperNet backend (TextBee Gateway) is running on http://localhost:${PORT}`);
+    console.log(`WhisperNet backend running on http://localhost:${PORT}`);
     console.log(`Visit http://localhost:${PORT}/index.html to start the app.`);
 });
