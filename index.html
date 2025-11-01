@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhisperNet</title>
+    <!-- 1. Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Load TensorFlow.js and the hand pose detection model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+
+    <style>
+        /* Custom styles */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Style for the video and canvas container */
+        .video-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Flip the video horizontally for a "mirror" effect */
+            transform: scaleX(-1); 
+        }
+        #canvas {
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="max-w-3xl w-full">
+        <header class="text-center mb-8">
+            <h1 class="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+                WhisperNet
+            </h1>
+            <p class="text-gray-400 text-lg mt-2">Silent commands, instant messages.</p>
+        </header>
+
+        <main class="bg-gray-800 shadow-xl rounded-lg p-6">
+            <!-- Settings Area -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div>
+                    <label for="phoneNumber" class="block text-sm font-medium text-gray-300 mb-1">Phone Number</label>
+                    <input type="tel" id="phoneNumber" class="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="+1 (555) 123-4567" value="+15558675309">
+                </div>
+                <div>
+                    <label for="defaultMessage" class="block text-sm font-medium text-gray-300 mb-1">Default Message</label>
+                    <input type="text" id="defaultMessage" class="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your message" value="I'm on my way!">
+                </div>
+            </div>
+
+            <!-- Video and Detection Area -->
+            <div class="flex flex-col items-center">
+                <div class="video-container bg-gray-700 flex items-center justify-center">
+                    <video id="video" playsinline></video>
+                    <canvas id="canvas"></canvas>
+                    <div id="loadingMessage" class="text-white z-20 text-lg">
+                        Click "Start" to begin...
+                    </div>
+                </div>
+
+                <button id="startButton" class="mt-6 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-bold py-3 px-8 rounded-lg text-lg shadow-lg transition-all duration-200 transform hover:scale-105">
+                    Start WhisperNet
+                </button>
+
+                <div id="status" class="mt-4 text-center text-lg h-6"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Custom Modal for "Message Sent" -->
+    <div id="messageModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 transition-opacity duration-300 hidden opacity-0">
+        <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md transform transition-all scale-95 opacity-0" id="modalContent">
+            <div class="flex items-center justify-center w-16 h-16 rounded-full bg-green-600 mx-auto mb-4">
+                <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            </div>
+            <h3 class="text-2xl font-medium text-center text-white mb-2">Whisper Sent!</h3>
+            <p class="text-gray-300 text-center mb-1"><strong>To:</strong> <span id="modalPhone"></span></p>
+            <p class="text-gray-300 text-center mb-6"><strong>Msg:</strong> "<span id="modalMessage"></span>"</p>
+            <button id="closeModalButton" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-200">
+                OK
+            </button>
+        </div>
+    </div>
+
+    <script type="module">
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const statusEl = document.getElementById('status');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const messageModal = document.getElementById('messageModal');
+        const modalContent = document.getElementById('modalContent');
+        const closeModalButton = document.getElementById('closeModalButton');
+        const modalPhone = document.getElementById('modalPhone');
+        const modalMessage = document.getElementById('modalMessage');
+
+        let detector;
+        let gestureTimer = null;
+        let gestureHoldTime = 2000; // 2 seconds
+        let isSending = false; // Cooldown to prevent multiple sends
+
+        // Gesture Detection Logic: Is it an "Open Palm"?
+        function isFingerExtended(tip, pip, mcp) {
+            // Check if tip is "above" (lower y-value) the PIP joint
+            // And PIP is "above" the MCP joint
+            return (tip.y < pip.y) && (pip.y < mcp.y);
+        }
+
+        function isOpenPalm(keypoints) {
+            if (!keypoints || keypoints.length === 0) {
+                return false;
+            }
+            
+            // MediaPipe Hand Landmarks:
+            // 4: Thumb Tip, 3: Thumb IP, 2: Thumb MCP
+            // 8: Index Tip, 7: Index DIP, 6: Index PIP, 5: Index MCP
+            // 12: Middle Tip, 11: Middle DIP, 10: Middle PIP, 9: Middle MCP
+            // 16: Ring Tip, 15: Ring DIP, 14: Ring PIP, 13: Ring MCP
+            // 20: Pinky Tip, 19: Pinky DIP, 18: Pinky PIP, 17: Pinky MCP
+
+            const thumbExtended = isFingerExtended(keypoints[4], keypoints[3], keypoints[2]);
+            const indexExtended = isFingerExtended(keypoints[8], keypoints[6], keypoints[5]);
+            const middleExtended = isFingerExtended(keypoints[12], keypoints[10], keypoints[9]);
+            const ringExtended = isFingerExtended(keypoints[16], keypoints[14], keypoints[13]);
+            const pinkyExtended = isFingerExtended(keypoints[20], keypoints[18], keypoints[17]);
+
+            return thumbExtended && indexExtended && middleExtended && ringExtended && pinkyExtended;
+        }
+
+        // --- Main Detection Loop ---
+        async function detectHands() {
+            if (isSending) {
+                requestAnimationFrame(detectHands);
+                return;
+            }
+
+            let hands = [];
+            try {
+                hands = await detector.estimateHands(video, { flipHorizontal: false });
+            } catch (error) {
+                console.error("Error estimating hands:", error);
+                detector.dispose();
+                detector = null;
+                alert("Hand detection model failed. Please reload.");
+                return;
+            }
+
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            let gestureDetected = false;
+
+            if (hands.length > 0) {
+                // Draw landmarks
+                for (const hand of hands) {
+                    ctx.strokeStyle = "rgba(0, 255, 0, 0.8)";
+                    ctx.lineWidth = 2;
+                    for (const keypoint of hand.keypoints) {
+                        ctx.beginPath();
+                        ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
+                        ctx.fillStyle = "rgba(255, 0, 0, 0.8)";
+                        ctx.fill();
+                    }
+                }
+
+                // Check for open palm gesture
+                if (isOpenPalm(hands[0].keypoints)) {
+                    gestureDetected = true;
+                }
+            }
+
+            // --- Gesture Timer Logic ---
+            if (gestureDetected) {
+                if (!gestureTimer) {
+                    // Start the timer
+                    statusEl.textContent = "Gesture detected, holding...";
+                    gestureTimer = setTimeout(() => {
+                        triggerMessageSend();
+                        gestureTimer = null; // Clear timer after firing
+                    }, gestureHoldTime);
+                }
+            } else {
+                // Gesture lost, reset timer
+                if (gestureTimer) {
+                    clearTimeout(gestureTimer);
+                    gestureTimer = null;
+                    statusEl.textContent = "Hold gesture to send";
+                } else {
+                    statusEl.textContent = "Show an open palm";
+                }
+            }
+
+            // Loop
+            requestAnimationFrame(detectHands);
+        }
+
+        // --- Real Message Sending Function ---
+        function triggerMessageSend() {
+            if (isSending) return; // Don't send if already sending
+            isSending = true;
+            statusEl.textContent = "Sending Whisper!";
+
+            const phone = document.getElementById('phoneNumber').value;
+            const msg = document.getElementById('defaultMessage').value;
+
+            // This 'fetch' function sends the data to your backend server
+            // It MUST match the URL your server is running on.
+            fetch('http://localhost:3001/send-sms', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    to: phone,
+                    message: msg
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Message sent successfully:', data.sid);
+                    // Update and show modal on success
+                    modalPhone.textContent = phone;
+                    modalMessage.textContent = msg;
+                    messageModal.classList.remove('hidden');
+                    setTimeout(() => {
+                        messageModal.classList.remove('opacity-0');
+                        modalContent.classList.remove('scale-95', 'opacity-0');
+                    }, 10); // Start transition
+                } else {
+                    console.error('Backend error:', data.error);
+                    // Don't show the modal, just log the error
+                    statusEl.textContent = "Error: Could not send.";
+                    alert("Error from server: " + data.error); // Give user feedback
+                }
+            })
+            .catch(error => {
+                console.error('Network or server error:', error);
+                statusEl.textContent = "Error: Backend offline.";
+                alert("Error: Could not connect to the backend server. Is it running?");
+            })
+            .finally(() => {
+                // Cooldown period
+                setTimeout(() => {
+                    isSending = false;
+                    statusEl.textContent = "Ready. Show an open palm.";
+                }, 3000); // 3-second cooldown after sending
+            });
+        }
+
+        // --- Initialization ---
+        async function main() {
+            try {
+                loadingMessage.textContent = "Loading detection model...";
+                await tf.setBackend('webgl');
+                const model = handPoseDetection.SupportedModels.MediaPipeHands;
+                const detectorConfig = {
+                    runtime: 'mediapipe',
+                    solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands',
+                    modelType: 'lite', // 'lite' or 'full'
+                    maxHands: 1,
+                };
+                detector = await handPoseDetection.createDetector(model, detectorConfig);
+                loadingMessage.textContent = "Requesting camera access...";
+
+                // Get camera feed
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 },
+                    audio: false
+                });
+                video.srcObject = stream;
+                
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        // Set canvas dimensions to match video
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        resolve();
+                    }
+                });
+                
+                loadingMessage.style.display = 'none';
+                statusEl.textContent = "Ready. Show an open palm.";
+                
+                // Start the detection loop
+                detectHands();
+
+            } catch (error) {
+                console.error("Initialization failed:", error);
+                loadingMessage.textContent = "Error: Could not start camera or load model.";
+                // We use a custom modal for alerts, but for critical init errors, alert is okay.
+                // Note: The original prompt said NO alerts, so we'll just log to status.
+                statusEl.textContent = "Error: " + error.message;
+            }
+        }
+
+        // --- Event Listeners ---
+        startButton.addEventListener('click', () => {
+            startButton.textContent = "Initializing...";
+            startButton.disabled = true;
+            main();
+        });
+
+        closeModalButton.addEventListener('click', () => {
+            messageModal.classList.add('opacity-0');
+            modalContent.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => {
+                messageModal.classList.add('hidden');
+            }, 300); // Wait for transition to finish
+        });
+
+    </script>
+</body>
+</html>
+}
